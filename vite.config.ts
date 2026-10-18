@@ -3,9 +3,13 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import { defineConfig } from 'vite';
 
-export default defineConfig(() => {
+export default defineConfig(({ command }) => {
+  // GitHub Pages-la deploy aagumbodhu subpath '/KBR-Holidays/' kandippa theva.
+  // AI Studio Dev server-la run aagumbodhu '/' nu irukanum.
+  const base = command === 'serve' ? '/' : (process.env.VITE_BASE || '/KBR-Holidays/');
+
   return {
-    base: '/',
+    base,
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
