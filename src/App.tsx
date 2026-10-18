@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Calendar as CalendarIcon,
   Phone,
@@ -10,17 +10,148 @@ import {
   LogIn,
   LogOut,
   ShieldCheck,
+  PlusCircle,
 } from 'lucide-react';
 import KbrLogo from './components/KbrLogo';
 import WallCalendar from './components/WallCalendar';
 import ContactBar, { INSTAGRAM_URL, CONTACT_NUMBERS } from './components/ContactBar';
 import LoginPage from './components/LoginPage';
+import AddBusesPage, { BusItem } from './components/AddBusesPage';
+import TravelsPage from './components/TravelsPage';
+import AdminBookingPage from './components/AdminBookingPage';
+
+const DEFAULT_BUSES: BusItem[] = [
+  {
+    id: 'bus-1',
+    name: 'BHAARTHI Super Luxury Sleeper Coach',
+    photoUrl: 'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?auto=format&fit=crop&w=1200&q=80',
+    photos: [
+      'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1570125909232-eb263c188f7e?auto=format&fit=crop&w=1200&q=80',
+    ],
+    createdAt: 1729000000000,
+  },
+  {
+    id: 'bus-2',
+    name: 'VISHAL Executive AC Multi-Axle Sleeper',
+    photoUrl: 'https://images.unsplash.com/photo-1570125909232-eb263c188f7e?auto=format&fit=crop&w=1200&q=80',
+    photos: [
+      'https://images.unsplash.com/photo-1570125909232-eb263c188f7e?auto=format&fit=crop&w=1200&q=80',
+      'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?auto=format&fit=crop&w=1200&q=80',
+    ],
+    createdAt: 1729001000000,
+  },
+];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'home' | 'calendar' | 'travels' | 'login'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'travels' | 'add-buses' | 'booking' | 'calendar' | 'login'>('home');
   const [showContactModal, setShowContactModal] = useState<boolean>(false);
+  const [selectedBusName, setSelectedBusName] = useState<string | null>(null);
+  const [viewingCalendarBus, setViewingCalendarBus] = useState<BusItem | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [currentUser, setCurrentUser] = useState<{ name: string; role: 'admin' | 'user' } | null>(null);
+
+  // Bus booking dates allocation persisted in localStorage
+  const [busBookings, setBusBookings] = useState<Record<string, string[]>>(() => {
+    try {
+      const saved = localStorage.getItem('kbr_bus_bookings');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    const defaultBookings: Record<string, string[]> = {
+      'bus-1': [
+        '2026-10-14',
+        '2026-10-15',
+        '2026-10-16',
+        '2026-10-20',
+        '2026-10-21',
+        '2026-10-22',
+        '2026-10-25',
+        '2026-11-01',
+        '2026-11-02',
+        '2026-11-03',
+        '2026-11-04',
+        '2027-01-10',
+        '2027-01-11',
+        '2027-01-12',
+      ],
+      'bus-2': ['2026-10-18', '2026-10-28', '2026-11-10', '2027-01-20'],
+    };
+    try {
+      const saved = localStorage.getItem('kbr_bus_bookings_v3');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          ...defaultBookings,
+          ...parsed,
+        };
+      }
+    } catch {
+      // ignore
+    }
+    return defaultBookings;
+  });
+
+  const handleToggleDateBooking = (busId: string, dateStr: string) => {
+    setBusBookings((prev) => {
+      const current = prev[busId] || [];
+      const exists = current.includes(dateStr);
+      const updatedForBus = exists
+        ? current.filter((d) => d !== dateStr)
+        : [...current, dateStr].sort();
+      const next = { ...prev, [busId]: updatedForBus };
+      try {
+        localStorage.setItem('kbr_bus_bookings_v3', JSON.stringify(next));
+        localStorage.setItem('kbr_bus_bookings', JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  // Buses list persisted in localStorage
+  const [buses, setBuses] = useState<BusItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('kbr_fleet_buses');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return parsed.map((b: any) => ({
+          ...b,
+          photos: b.photos && b.photos.length > 0 ? b.photos : [b.photoUrl],
+        }));
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_BUSES;
+  });
+
+  const handleAddBus = (newBus: Omit<BusItem, 'id' | 'createdAt'>) => {
+    const item: BusItem = {
+      ...newBus,
+      id: 'bus-' + Date.now(),
+      createdAt: Date.now(),
+    };
+    const updated = [item, ...buses];
+    setBuses(updated);
+    try {
+      localStorage.setItem('kbr_fleet_buses', JSON.stringify(updated));
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDeleteBus = (id: string) => {
+    const updated = buses.filter((b) => b.id !== id);
+    setBuses(updated);
+    try {
+      localStorage.setItem('kbr_fleet_buses', JSON.stringify(updated));
+    } catch {
+      // ignore
+    }
+  };
 
   if (activeTab === 'login') {
     return (
@@ -65,7 +196,7 @@ export default function App() {
             </button>
           </div>
 
-          {/* Navigation Tabs: Home, Calendar & Travels (Desktop) */}
+          {/* Navigation Tabs: Home, Travels & (if Admin) Add Buses */}
           <nav className="hidden md:flex items-center gap-1.5">
             <button
               onClick={() => setActiveTab('home')}
@@ -79,18 +210,6 @@ export default function App() {
             </button>
 
             <button
-              onClick={() => setActiveTab('calendar')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs sm:text-sm font-semibold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === 'calendar'
-                  ? 'bg-blue-600 text-white shadow-sm ring-2 ring-blue-300'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              <CalendarIcon className="w-4 h-4" />
-              <span>Calendar</span>
-            </button>
-
-            <button
               onClick={() => setActiveTab('travels')}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs sm:text-sm font-semibold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
                 activeTab === 'travels'
@@ -101,6 +220,35 @@ export default function App() {
               <Bus className="w-4 h-4" />
               <span>Travels</span>
             </button>
+
+            {/* Admin-only "Add Buses" and "Booking" tabs */}
+            {currentUser?.role === 'admin' && (
+              <>
+                <button
+                  onClick={() => setActiveTab('add-buses')}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs sm:text-sm font-semibold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
+                    activeTab === 'add-buses'
+                      ? 'bg-amber-600 text-white shadow-sm ring-2 ring-amber-300'
+                      : 'text-amber-700 hover:text-amber-900 hover:bg-amber-50'
+                  }`}
+                >
+                  <PlusCircle className="w-4 h-4 text-amber-500" />
+                  <span>Add Buses</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('booking')}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs sm:text-sm font-semibold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
+                    activeTab === 'booking'
+                      ? 'bg-indigo-600 text-white shadow-sm ring-2 ring-indigo-300'
+                      : 'text-indigo-700 hover:text-indigo-900 hover:bg-indigo-50'
+                  }`}
+                >
+                  <CalendarIcon className="w-4 h-4 text-indigo-500" />
+                  <span>Booking</span>
+                </button>
+              </>
+            )}
           </nav>
 
           {/* Quick Contact CTA & Sign In */}
@@ -198,21 +346,6 @@ export default function App() {
 
               <button
                 onClick={() => {
-                  setActiveTab('calendar');
-                  setIsMenuOpen(false);
-                }}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
-                  activeTab === 'calendar'
-                    ? 'bg-blue-600 text-white shadow-sm ring-2 ring-blue-300'
-                    : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
-                }`}
-              >
-                <CalendarIcon className="w-4 h-4" />
-                <span>Calendar</span>
-              </button>
-
-              <button
-                onClick={() => {
                   setActiveTab('travels');
                   setIsMenuOpen(false);
                 }}
@@ -225,6 +358,41 @@ export default function App() {
                 <Bus className="w-4 h-4" />
                 <span>Travels</span>
               </button>
+
+              {/* Admin-only "Add Buses" and "Booking" options in drawer */}
+              {currentUser?.role === 'admin' && (
+                <>
+                  <button
+                    onClick={() => {
+                      setActiveTab('add-buses');
+                      setIsMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
+                      activeTab === 'add-buses'
+                        ? 'bg-amber-600 text-white shadow-sm ring-2 ring-amber-300'
+                        : 'text-amber-800 hover:bg-amber-50 hover:text-amber-900 font-bold'
+                    }`}
+                  >
+                    <PlusCircle className="w-4 h-4 text-amber-500" />
+                    <span>Add Buses</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab('booking');
+                      setIsMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
+                      activeTab === 'booking'
+                        ? 'bg-indigo-600 text-white shadow-sm ring-2 ring-indigo-300'
+                        : 'text-indigo-800 hover:bg-indigo-50 hover:text-indigo-900 font-bold'
+                    }`}
+                  >
+                    <CalendarIcon className="w-4 h-4 text-indigo-500" />
+                    <span>Booking</span>
+                  </button>
+                </>
+              )}
 
               <div className="pt-3 pb-1 border-t border-slate-200 my-2">
                 <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider px-4">
@@ -365,15 +533,53 @@ export default function App() {
               </div>
             </div>
           </div>
-        ) : activeTab === 'calendar' ? (
-          /* Calendar View - strictly matching the wall calendar template */
-          <div className="py-4 sm:py-8">
-            <WallCalendar onContactClick={() => setShowContactModal(true)} />
-          </div>
+        ) : activeTab === 'travels' ? (
+          /* Travels Page - displays fleet of all added buses with click-to-view gallery, Booking Dates, & direct contact */
+          <TravelsPage
+            buses={buses}
+            isAdmin={currentUser?.role === 'admin'}
+            busBookings={busBookings}
+            onOpenBookingDates={(bus) => {
+              setViewingCalendarBus(bus);
+              setActiveTab('calendar');
+            }}
+          />
+        ) : activeTab === 'add-buses' ? (
+          /* Admin Add Buses Page */
+          <AddBusesPage
+            buses={buses}
+            onAddBus={handleAddBus}
+            onDeleteBus={handleDeleteBus}
+          />
+        ) : activeTab === 'booking' ? (
+          /* Admin Booking Allocation Page */
+          <AdminBookingPage
+            buses={buses}
+            busBookings={busBookings}
+            onToggleDateBooking={handleToggleDateBooking}
+          />
         ) : (
-          /* Travels Page - Empty as explicitly requested ("adhukkulla emptya erukkanu") */
-          <div className="flex-1 min-h-[60vh] flex flex-col items-center justify-center p-6 text-center">
-            {/* Pure clean empty page */}
+          /* Calendar View for Normal Users showing allocated booking dates for the bus or general calendar */
+          <div className="py-4 sm:py-8">
+            <WallCalendar
+              busName={viewingCalendarBus?.name}
+              bookedDates={viewingCalendarBus ? busBookings[viewingCalendarBus.id] || [] : []}
+              isAdminMode={false}
+              onBack={
+                viewingCalendarBus
+                  ? () => {
+                      setActiveTab('travels');
+                      setViewingCalendarBus(null);
+                    }
+                  : undefined
+              }
+              onContactClick={() => {
+                if (viewingCalendarBus) {
+                  setSelectedBusName(viewingCalendarBus.name);
+                }
+                setShowContactModal(true);
+              }}
+            />
           </div>
         )}
       </main>
@@ -414,10 +620,20 @@ export default function App() {
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-slate-50">
               <div className="flex items-center gap-2">
                 <KbrLogo size={28} />
-                <span className="font-bold text-slate-900 text-sm">KBR Holidays Support</span>
+                <div>
+                  <span className="font-bold text-slate-900 text-sm block">KBR Holidays Support</span>
+                  {selectedBusName && (
+                    <span className="text-[11px] text-blue-700 font-semibold block">
+                      Bus: {selectedBusName}
+                    </span>
+                  )}
+                </div>
               </div>
               <button
-                onClick={() => setShowContactModal(false)}
+                onClick={() => {
+                  setShowContactModal(false);
+                  setSelectedBusName(null);
+                }}
                 className="text-slate-400 hover:text-slate-600 text-lg font-bold p-1 cursor-pointer"
               >
                 ✕
