@@ -200,44 +200,44 @@ export default function App() {
   const handleAddBus = async (newBus: Omit<BusItem, 'id' | 'createdAt'>) => {
     const id = 'bus-' + Date.now();
     
-    // Upload Base64 photos to Firebase Storage and get URLs
-    const uploadedPhotos = await Promise.all(
-      newBus.photos.map(async (photo, index) => {
-        // base64 format-a irundha mattum storage-la upload aagum
-        if (photo.startsWith('data:image')) {
-          const storageRef = ref(storage, `buses/${id}/photo_${index}.jpg`);
-          await uploadString(storageRef, photo, 'data_url');
-          return await getDownloadURL(storageRef);
-        }
-        return photo; // Already URL-a irundha direct-a return aagidum
-      })
-    );
-
-    const item: BusItem = {
+    // 1. OPTIMISTIC UPDATE: Modal close aanadhum udane UI-la kaata
+    const optimisticItem: BusItem = {
       ...newBus,
       id,
-      photoUrl: uploadedPhotos[0] || '', // First image-a cover photo va vachikkalam
-      photos: uploadedPhotos,
+      photoUrl: newBus.photos[0] || '',
       createdAt: Date.now(),
     };
-
-    // Optimistic UI update (Local ah update panradhu)
-    const updated = [item, ...buses];
-    setBuses(updated);
+    
+    const updated = [optimisticItem, ...buses];
+    setBuses(updated); // Udane screen-la bus add aagidum
     try {
       localStorage.setItem('kbr_fleet_buses', JSON.stringify(updated));
     } catch {}
 
-    // Persist to Firestore (Database-la save panradhu)
+    // 2. BACKGROUND UPLOAD: Firebase Storage & Database-la save panradhu
     try {
+      const uploadedPhotos = await Promise.all(
+        newBus.photos.map(async (photo, index) => {
+          if (photo.startsWith('data:image')) {
+            const storageRef = ref(storage, `buses/${id}/photo_${index}.jpg`);
+            await uploadString(storageRef, photo, 'data_url');
+            return await getDownloadURL(storageRef);
+          }
+          return photo;
+        })
+      );
+
+      // 3. FIRESTORE SAVE: Real image URL kedaicha udane DB-la update pannum
       await setDoc(doc(db, 'buses', id), {
-        name: item.name,
-        photoUrl: item.photoUrl,
-        photos: item.photos,
-        createdAt: item.createdAt,
+        name: optimisticItem.name,
+        photoUrl: uploadedPhotos[0] || '',
+        photos: uploadedPhotos,
+        createdAt: optimisticItem.createdAt,
       });
+
     } catch (error) {
-      console.error('Error adding bus to Firestore:', error);
+      console.error('Firebase Error:', error);
+      alert("Firebase-la store aagala! Browser console-a paaru (Right Click -> Inspect -> Console)");
     }
   };
 
