@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { db, auth, storage } from './firebase'; 
+import { ref, uploadString, getDownloadURL } from 'firebase/storage';
 import {
   Calendar as CalendarIcon,
   Phone,
@@ -12,7 +14,7 @@ import {
   ShieldCheck,
   PlusCircle,
 } from 'lucide-react';
-import { db, auth } from './firebase';
+
 import {
   collection,
   doc,
@@ -197,20 +199,36 @@ export default function App() {
 
   const handleAddBus = async (newBus: Omit<BusItem, 'id' | 'createdAt'>) => {
     const id = 'bus-' + Date.now();
+    
+    // Upload Base64 photos to Firebase Storage and get URLs
+    const uploadedPhotos = await Promise.all(
+      newBus.photos.map(async (photo, index) => {
+        // base64 format-a irundha mattum storage-la upload aagum
+        if (photo.startsWith('data:image')) {
+          const storageRef = ref(storage, `buses/${id}/photo_${index}.jpg`);
+          await uploadString(storageRef, photo, 'data_url');
+          return await getDownloadURL(storageRef);
+        }
+        return photo; // Already URL-a irundha direct-a return aagidum
+      })
+    );
+
     const item: BusItem = {
       ...newBus,
       id,
+      photoUrl: uploadedPhotos[0] || '', // First image-a cover photo va vachikkalam
+      photos: uploadedPhotos,
       createdAt: Date.now(),
     };
 
-    // Optimistic update
+    // Optimistic UI update (Local ah update panradhu)
     const updated = [item, ...buses];
     setBuses(updated);
     try {
       localStorage.setItem('kbr_fleet_buses', JSON.stringify(updated));
     } catch {}
 
-    // Persist to Firestore
+    // Persist to Firestore (Database-la save panradhu)
     try {
       await setDoc(doc(db, 'buses', id), {
         name: item.name,
