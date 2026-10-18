@@ -286,25 +286,35 @@ export default function App() {
       const uploadedPhotos = await Promise.all(
         newBus.photos.map(async (photo, index) => {
           if (photo.startsWith('data:image')) {
-            const storageRef = ref(storage, `buses/${id}/photo_${index}.jpg`);
-            await uploadString(storageRef, photo, 'data_url');
-            return await getDownloadURL(storageRef);
+            try {
+              const storageRef = ref(storage, `buses/${id}/photo_${index}.jpg`);
+              await uploadString(storageRef, photo, 'data_url');
+              return await getDownloadURL(storageRef);
+            } catch (storageErr) {
+              console.warn(`Firebase Storage upload skipped for photo ${index} (Storage CORS), using optimized photo data:`, storageErr);
+              return photo; // Keep image as fallback so Firestore save still succeeds!
+            }
           }
           return photo;
         })
       );
 
-      // 3. FIRESTORE SAVE: Real image URL kedaicha udane DB-la update pannum
+      // 3. FIRESTORE SAVE: Real image URL or fallback data DB-la update pannum
       await setDoc(doc(db, 'buses', id), {
         name: optimisticItem.name,
         photoUrl: uploadedPhotos[0] || '',
         photos: uploadedPhotos,
         createdAt: optimisticItem.createdAt,
       });
+      console.log('✅ Bus saved to Firestore successfully:', id);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('Firebase Error:', error);
-      alert("Firebase-la store aagala! Browser console-a paaru (Right Click -> Inspect -> Console)");
+      if (error?.code === 'permission-denied') {
+        alert("Firestore Permission Denied! Firebase Console-la Firestore Rules-la 'allow read, write: if true;' nu set panna vendum.");
+      } else {
+        alert("Firestore Error: " + (error?.message || 'Failed to save to Firestore'));
+      }
     }
   };
 
