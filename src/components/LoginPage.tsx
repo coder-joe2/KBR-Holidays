@@ -1,4 +1,11 @@
 import React, { useState } from 'react';
+import { auth, googleProvider } from '../firebase';
+import {
+  signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
+} from 'firebase/auth';
 import {
   ArrowLeft,
   Lock,
@@ -20,7 +27,7 @@ import KbrLogo from './KbrLogo';
 
 interface LoginPageProps {
   onBack: () => void;
-  onLoginSuccess: (user: { name: string; role: 'admin' | 'user' }) => void;
+  onLoginSuccess: (user: { name: string; role: 'admin' | 'user'; email?: string; photoURL?: string }) => void;
 }
 
 export const LoginPage: React.FC<LoginPageProps> = ({
@@ -47,7 +54,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [agreeTerms, setAgreeTerms] = useState(true);
 
   // Handle Login
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
 
@@ -59,7 +66,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       return;
     }
 
-    // Admin Credentials validation as specified:
+    // Admin Credentials validation (legacy):
     // Email id: "Admin", password: "KBR@123"
     if (emailTrim.toLowerCase() === 'admin' && passTrim === 'KBR@123') {
       setLoginSuccessMessage('Welcome Administrator! Logging in to KBR Holidays...');
@@ -69,20 +76,34 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       return;
     }
 
-    // Client/Customer login simulation
-    if (passTrim.length >= 6) {
-      setLoginSuccessMessage(`Welcome back! Logging in...`);
+    // Firebase Email/Password login
+    try {
+      const credential = await signInWithEmailAndPassword(auth, emailTrim, passTrim);
+      const user = credential.user;
+      const isAdmin = user.email?.toLowerCase() === 'kbrholidays@gmail.com';
+      setLoginSuccessMessage(`Welcome back, ${user.displayName || user.email}! Logging in...`);
       setTimeout(() => {
-        onLoginSuccess({ name: emailTrim.split('@')[0] || 'Voyager Guest', role: 'user' });
+        onLoginSuccess({
+          name: user.displayName || user.email?.split('@')[0] || 'User',
+          role: isAdmin ? 'admin' : 'user',
+          email: user.email || undefined,
+        });
       }, 700);
-      return;
+    } catch (error: any) {
+      if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
+        setLoginError('No account found with this email. Please create an account first.');
+      } else if (error.code === 'auth/wrong-password') {
+        setLoginError('Incorrect password. Please try again.');
+      } else if (error.code === 'auth/invalid-email') {
+        setLoginError('Please enter a valid email address.');
+      } else {
+        setLoginError('Login failed. (For Admin access, use Admin and KBR@123)');
+      }
     }
-
-    setLoginError('Invalid password. (For Admin access, use Admin and KBR@123)');
   };
 
-  // Handle Signup
-  const handleSignupSubmit = (e: React.FormEvent) => {
+  // Handle Signup with Firebase Email/Password Auth
+  const handleSignupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!signupFullName.trim()) {
       alert('Please enter your full name');
@@ -92,10 +113,21 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       alert('Passwords do not match');
       return;
     }
-    setLoginSuccessMessage('Account created successfully! Welcome to KBR Holidays.');
-    setTimeout(() => {
-      onLoginSuccess({ name: signupFullName, role: 'user' });
-    }, 700);
+    try {
+      const credential = await createUserWithEmailAndPassword(auth, signupEmail, signupPassword);
+      await updateProfile(credential.user, { displayName: signupFullName });
+      setLoginSuccessMessage('Account created successfully! Welcome to KBR Holidays.');
+      setTimeout(() => {
+        onLoginSuccess({ name: signupFullName, role: 'user', email: signupEmail });
+      }, 700);
+    } catch (error: any) {
+      const msg = error.code === 'auth/email-already-in-use'
+        ? 'This email is already registered. Please sign in instead.'
+        : error.code === 'auth/weak-password'
+        ? 'Password should be at least 6 characters.'
+        : error.message || 'Failed to create account. Please try again.';
+      alert(msg);
+    }
   };
 
   // Quick fill Admin helper for demonstration
@@ -103,6 +135,28 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     setLoginEmail('Admin');
     setLoginPassword('KBR@123');
     setLoginError(null);
+  };
+
+  // Real Google Authentication
+  const handleGoogleSignIn = async () => {
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const user = result.user;
+      const isAdmin = user.email?.toLowerCase() === 'kbrholidays@gmail.com';
+      setLoginSuccessMessage(`Signed in with Google as ${user.displayName || user.email}`);
+      setTimeout(() => {
+        onLoginSuccess({
+          name: user.displayName || user.email?.split('@')[0] || 'Google User',
+          role: isAdmin ? 'admin' : 'user',
+          email: user.email || undefined,
+          photoURL: user.photoURL || undefined,
+        });
+      }, 500);
+    } catch (error: any) {
+      if (error.code !== 'auth/popup-closed-by-user') {
+        setLoginError('Google sign-in failed. Please try again.');
+      }
+    }
   };
 
   return (
@@ -279,10 +333,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
-                  onClick={() => {
-                    setLoginSuccessMessage('Logged in with Google');
-                    setTimeout(() => onLoginSuccess({ name: 'Google Voyager', role: 'user' }), 500);
-                  }}
+                  onClick={handleGoogleSignIn}
                   className="flex items-center justify-center gap-2 py-2.5 px-3 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 shadow-xs transition-colors cursor-pointer"
                 >
                   <svg className="w-4 h-4" viewBox="0 0 24 24">
@@ -534,10 +585,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
-                  onClick={() => {
-                    setLoginSuccessMessage('Fast-tracked with Google');
-                    setTimeout(() => onLoginSuccess({ name: 'Google Voyager', role: 'user' }), 500);
-                  }}
+                  onClick={handleGoogleSignIn}
                   className="flex items-center justify-center gap-2 py-2.5 px-3 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 shadow-xs transition-colors cursor-pointer"
                 >
                   <svg className="w-4 h-4" viewBox="0 0 24 24">

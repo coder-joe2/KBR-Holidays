@@ -12,6 +12,18 @@ import {
   ShieldCheck,
   PlusCircle,
 } from 'lucide-react';
+import { db, auth } from './firebase';
+import {
+  collection,
+  doc,
+  getDocs,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+  query,
+  orderBy,
+} from 'firebase/firestore';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import KbrLogo from './components/KbrLogo';
 import WallCalendar from './components/WallCalendar';
 import ContactBar, { INSTAGRAM_URL, CONTACT_NUMBERS } from './components/ContactBar';
@@ -19,6 +31,12 @@ import LoginPage from './components/LoginPage';
 import AddBusesPage, { BusItem } from './components/AddBusesPage';
 import TravelsPage from './components/TravelsPage';
 import AdminBookingPage from './components/AdminBookingPage';
+
+// Admin email - users logging in with this Google account get admin role
+const ADMIN_EMAILS = ['kbrholidays@gmail.com'];
+// Also keep the legacy admin username/password check
+const ADMIN_USERNAME = 'admin';
+const ADMIN_PASSWORD = 'KBR@123';
 
 const DEFAULT_BUSES: BusItem[] = [
   {
@@ -43,114 +61,190 @@ const DEFAULT_BUSES: BusItem[] = [
   },
 ];
 
+const DEFAULT_BOOKINGS: Record<string, string[]> = {
+  'bus-1': [
+    '2026-10-14',
+    '2026-10-15',
+    '2026-10-16',
+    '2026-10-20',
+    '2026-10-21',
+    '2026-10-22',
+    '2026-10-25',
+    '2026-11-01',
+    '2026-11-02',
+    '2026-11-03',
+    '2026-11-04',
+    '2027-01-10',
+    '2027-01-11',
+    '2027-01-12',
+  ],
+  'bus-2': ['2026-10-18', '2026-10-28', '2026-11-10', '2027-01-20'],
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'travels' | 'add-buses' | 'booking' | 'calendar' | 'login'>('home');
   const [showContactModal, setShowContactModal] = useState<boolean>(false);
   const [selectedBusName, setSelectedBusName] = useState<string | null>(null);
   const [viewingCalendarBus, setViewingCalendarBus] = useState<BusItem | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
-  const [currentUser, setCurrentUser] = useState<{ name: string; role: 'admin' | 'user' } | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ name: string; role: 'admin' | 'user'; email?: string; photoURL?: string } | null>(null);
 
-  // Bus booking dates allocation persisted in localStorage
+  // Bus booking dates from Firestore with local fallback
   const [busBookings, setBusBookings] = useState<Record<string, string[]>>(() => {
     try {
-      const saved = localStorage.getItem('kbr_bus_bookings');
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    const defaultBookings: Record<string, string[]> = {
-      'bus-1': [
-        '2026-10-14',
-        '2026-10-15',
-        '2026-10-16',
-        '2026-10-20',
-        '2026-10-21',
-        '2026-10-22',
-        '2026-10-25',
-        '2026-11-01',
-        '2026-11-02',
-        '2026-11-03',
-        '2026-11-04',
-        '2027-01-10',
-        '2027-01-11',
-        '2027-01-12',
-      ],
-      'bus-2': ['2026-10-18', '2026-10-28', '2026-11-10', '2027-01-20'],
-    };
-    try {
       const saved = localStorage.getItem('kbr_bus_bookings_v3');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return {
-          ...defaultBookings,
-          ...parsed,
-        };
-      }
-    } catch {
-      // ignore
-    }
-    return defaultBookings;
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_BOOKINGS;
   });
 
-  const handleToggleDateBooking = (busId: string, dateStr: string) => {
-    setBusBookings((prev) => {
-      const current = prev[busId] || [];
-      const exists = current.includes(dateStr);
-      const updatedForBus = exists
-        ? current.filter((d) => d !== dateStr)
-        : [...current, dateStr].sort();
-      const next = { ...prev, [busId]: updatedForBus };
-      try {
-        localStorage.setItem('kbr_bus_bookings_v3', JSON.stringify(next));
-        localStorage.setItem('kbr_bus_bookings', JSON.stringify(next));
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  };
-
-  // Buses list persisted in localStorage
+  // Buses list from Firestore with local fallback
   const [buses, setBuses] = useState<BusItem[]>(() => {
     try {
       const saved = localStorage.getItem('kbr_fleet_buses');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return parsed.map((b: any) => ({
-          ...b,
-          photos: b.photos && b.photos.length > 0 ? b.photos : [b.photoUrl],
-        }));
-      }
-    } catch {
-      // ignore
-    }
+      if (saved) return JSON.parse(saved);
+    } catch {}
     return DEFAULT_BUSES;
   });
+  const [isLoading, setIsLoading] = useState(true);
 
-  const handleAddBus = (newBus: Omit<BusItem, 'id' | 'createdAt'>) => {
+  // Listen for Firebase Auth state changes
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        const isAdmin = ADMIN_EMAILS.includes(firebaseUser.email?.toLowerCase() || '');
+        setCurrentUser({
+          name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+          role: isAdmin ? 'admin' : 'user',
+          email: firebaseUser.email || undefined,
+          photoURL: firebaseUser.photoURL || undefined,
+        });
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Listen for buses collection from Firestore (real-time)
+  useEffect(() => {
+    const q = query(collection(db, 'buses'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const busesData: BusItem[] = snapshot.docs.map((d) => ({
+            id: d.id,
+            ...d.data(),
+          })) as BusItem[];
+          setBuses(busesData);
+          try {
+            localStorage.setItem('kbr_fleet_buses', JSON.stringify(busesData));
+          } catch {}
+        }
+        setIsLoading(false);
+      },
+      (error) => {
+        console.warn('Firestore buses error, using cached data:', error);
+        setIsLoading(false);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  // Listen for bookings collection from Firestore (real-time)
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, 'bookings'),
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const bookingsData: Record<string, string[]> = {};
+          snapshot.docs.forEach((d) => {
+            bookingsData[d.id] = d.data().dates || [];
+          });
+          setBusBookings(bookingsData);
+          try {
+            localStorage.setItem('kbr_bus_bookings_v3', JSON.stringify(bookingsData));
+          } catch {}
+        }
+      },
+      (error) => {
+        console.warn('Firestore bookings error, using cached data:', error);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  const handleToggleDateBooking = async (busId: string, dateStr: string) => {
+    const current = busBookings[busId] || [];
+    const exists = current.includes(dateStr);
+    const updatedDates = exists
+      ? current.filter((d) => d !== dateStr)
+      : [...current, dateStr].sort();
+
+    const nextBookings = { ...busBookings, [busId]: updatedDates };
+    // Optimistic update
+    setBusBookings(nextBookings);
+    try {
+      localStorage.setItem('kbr_bus_bookings_v3', JSON.stringify(nextBookings));
+    } catch {}
+
+    // Persist to Firestore
+    try {
+      await setDoc(doc(db, 'bookings', busId), { dates: updatedDates });
+    } catch (error) {
+      console.error('Error updating booking in Firestore:', error);
+    }
+  };
+
+  const handleAddBus = async (newBus: Omit<BusItem, 'id' | 'createdAt'>) => {
+    const id = 'bus-' + Date.now();
     const item: BusItem = {
       ...newBus,
-      id: 'bus-' + Date.now(),
+      id,
       createdAt: Date.now(),
     };
+
+    // Optimistic update
     const updated = [item, ...buses];
     setBuses(updated);
     try {
       localStorage.setItem('kbr_fleet_buses', JSON.stringify(updated));
-    } catch {
-      // ignore
+    } catch {}
+
+    // Persist to Firestore
+    try {
+      await setDoc(doc(db, 'buses', id), {
+        name: item.name,
+        photoUrl: item.photoUrl,
+        photos: item.photos,
+        createdAt: item.createdAt,
+      });
+    } catch (error) {
+      console.error('Error adding bus to Firestore:', error);
     }
   };
 
-  const handleDeleteBus = (id: string) => {
+  const handleDeleteBus = async (id: string) => {
     const updated = buses.filter((b) => b.id !== id);
     setBuses(updated);
     try {
       localStorage.setItem('kbr_fleet_buses', JSON.stringify(updated));
-    } catch {
-      // ignore
+    } catch {}
+
+    try {
+      await deleteDoc(doc(db, 'buses', id));
+      await deleteDoc(doc(db, 'bookings', id)).catch(() => {});
+    } catch (error) {
+      console.error('Error deleting bus from Firestore:', error);
     }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error('Error signing out:', error);
+    }
+    setCurrentUser(null);
   };
 
   if (activeTab === 'login') {
@@ -255,11 +349,15 @@ export default function App() {
           <div className="flex items-center gap-1.5 sm:gap-2">
             {currentUser ? (
               <button
-                onClick={() => setCurrentUser(null)}
+                onClick={handleSignOut}
                 className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-amber-100/80 hover:bg-amber-200 border border-amber-300 rounded-lg transition-colors cursor-pointer"
                 title="Click to sign out"
               >
-                <ShieldCheck className="w-3.5 h-3.5 text-amber-600" />
+                {currentUser.photoURL ? (
+                  <img src={currentUser.photoURL} alt="" className="w-5 h-5 rounded-full" />
+                ) : (
+                  <ShieldCheck className="w-3.5 h-3.5 text-amber-600" />
+                )}
                 <span>{currentUser.name}</span>
               </button>
             ) : (
@@ -447,7 +545,11 @@ export default function App() {
                 {currentUser ? (
                   <div className="flex items-center justify-between p-2.5 bg-amber-50 border border-amber-200 rounded-xl">
                     <div className="flex items-center gap-2">
-                      <ShieldCheck className="w-4 h-4 text-amber-600" />
+                      {currentUser.photoURL ? (
+                        <img src={currentUser.photoURL} alt="" className="w-6 h-6 rounded-full" />
+                      ) : (
+                        <ShieldCheck className="w-4 h-4 text-amber-600" />
+                      )}
                       <div>
                         <div className="text-xs font-bold text-slate-900">
                           {currentUser.name}
@@ -457,7 +559,7 @@ export default function App() {
                       </div>
                     </div>
                     <button
-                      onClick={() => setCurrentUser(null)}
+                      onClick={handleSignOut}
                       className="flex items-center gap-1 px-2 py-1 text-xs font-semibold text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
                     >
                       <LogOut className="w-3.5 h-3.5" />
@@ -484,7 +586,12 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col justify-center">
-        {activeTab === 'home' ? (
+        {isLoading ? (
+          <div className="flex-1 flex flex-col items-center justify-center px-4 py-16">
+            <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4" />
+            <span className="text-sm font-medium text-slate-500">Loading KBR Holidays...</span>
+          </div>
+        ) : activeTab === 'home' ? (
           /* Empty / Clean Minimal Home as explicitly requested ("Home : Empty ya erukkatu") */
           <div className="flex-1 flex flex-col items-center justify-center px-4 py-10 sm:py-16 text-center max-w-3xl mx-auto w-full">
             {/* Admin Badge if logged in as Admin */}
