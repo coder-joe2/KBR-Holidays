@@ -4,13 +4,13 @@ import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyDH_ADjgqb2Av1-1KzHbRmPmYUdI5uPh9s",
-  authDomain: "kbr-holidays.firebaseapp.com",
-  projectId: "kbr-holidays",
-  storageBucket: "kbr-holidays.firebasestorage.app",
-  messagingSenderId: "692376970289",
-  appId: "1:692376970289:web:a48fe1d2b15b67a4352110",
-  measurementId: "G-9Y1WK2V4QQ"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDH_ADjgqb2Av1-1KzHbRmPmYUdI5uPh9s",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "kbr-holidays.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "kbr-holidays",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "kbr-holidays.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "692376970289",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:692376970289:web:a48fe1d2b15b67a4352110",
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "G-9Y1WK2V4QQ"
 };
 
 const app = initializeApp(firebaseConfig);
