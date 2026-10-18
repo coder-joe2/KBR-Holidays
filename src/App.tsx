@@ -126,6 +126,73 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Sync local/cached data to Firestore when an admin logs in and Firestore is empty
+  useEffect(() => {
+    if (currentUser?.role !== 'admin') return;
+
+    const syncLocalDataToFirestore = async () => {
+      try {
+        // Read current local data (localStorage or defaults)
+        let localBuses: BusItem[] = DEFAULT_BUSES;
+        try {
+          const saved = localStorage.getItem('kbr_fleet_buses');
+          if (saved) localBuses = JSON.parse(saved);
+        } catch {}
+
+        let localBookings: Record<string, string[]> = DEFAULT_BOOKINGS;
+        try {
+          const saved = localStorage.getItem('kbr_bus_bookings_v3');
+          if (saved) localBookings = JSON.parse(saved);
+        } catch {}
+
+        // Check if Firestore buses collection is empty — if yes, push local data
+        const busesSnapshot = await getDocs(collection(db, 'buses'));
+        if (busesSnapshot.empty && localBuses.length > 0) {
+          console.log('🔄 Syncing', localBuses.length, 'buses to Firestore...');
+          for (const bus of localBuses) {
+            // Upload base64 images to Firebase Storage first
+            const uploadedPhotos = await Promise.all(
+              (bus.photos || [bus.photoUrl]).map(async (photo, index) => {
+                if (photo.startsWith('data:image')) {
+                  try {
+                    const storageRef = ref(storage, `buses/${bus.id}/photo_${index}.jpg`);
+                    await uploadString(storageRef, photo, 'data_url');
+                    return await getDownloadURL(storageRef);
+                  } catch {
+                    return photo; // Keep base64 as fallback
+                  }
+                }
+                return photo;
+              })
+            );
+
+            await setDoc(doc(db, 'buses', bus.id), {
+              name: bus.name,
+              photoUrl: uploadedPhotos[0] || bus.photoUrl,
+              photos: uploadedPhotos,
+              createdAt: bus.createdAt,
+            });
+          }
+          console.log('✅ Buses synced to Firestore!');
+        }
+
+        // Check if Firestore bookings collection is empty
+        const bookingsSnapshot = await getDocs(collection(db, 'bookings'));
+        if (bookingsSnapshot.empty && Object.keys(localBookings).length > 0) {
+          console.log('🔄 Syncing bookings to Firestore...');
+          for (const [busId, dates] of Object.entries(localBookings)) {
+            await setDoc(doc(db, 'bookings', busId), { dates });
+          }
+          console.log('✅ Bookings synced to Firestore!');
+        }
+      } catch (error) {
+        console.error('❌ Failed to sync data to Firestore:', error);
+      }
+    };
+
+    syncLocalDataToFirestore();
+  }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Listen for buses collection from Firestore (real-time)
   useEffect(() => {
     const q = query(collection(db, 'buses'), orderBy('createdAt', 'desc'));
