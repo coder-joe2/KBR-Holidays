@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { db, auth, storage } from './firebase'; 
-import { ref, uploadString, getDownloadURL } from 'firebase/storage';
+import { db, auth } from './firebase'; 
 import {
   Calendar as CalendarIcon,
   Phone,
@@ -148,28 +147,12 @@ export default function App() {
         // Check if Firestore buses collection is empty — if yes, push local data
         const busesSnapshot = await getDocs(collection(db, 'buses'));
         if (busesSnapshot.empty && localBuses.length > 0) {
-          console.log('🔄 Syncing', localBuses.length, 'buses to Firestore...');
+          console.log('🔄 Syncing', localBuses.length, 'buses directly to Firestore...');
           for (const bus of localBuses) {
-            // Upload base64 images to Firebase Storage first
-            const uploadedPhotos = await Promise.all(
-              (bus.photos || [bus.photoUrl]).map(async (photo, index) => {
-                if (photo.startsWith('data:image')) {
-                  try {
-                    const storageRef = ref(storage, `buses/${bus.id}/photo_${index}.jpg`);
-                    await uploadString(storageRef, photo, 'data_url');
-                    return await getDownloadURL(storageRef);
-                  } catch {
-                    return photo; // Keep base64 as fallback
-                  }
-                }
-                return photo;
-              })
-            );
-
             await setDoc(doc(db, 'buses', bus.id), {
               name: bus.name,
-              photoUrl: uploadedPhotos[0] || bus.photoUrl,
-              photos: uploadedPhotos,
+              photoUrl: bus.photos?.[0] || bus.photoUrl,
+              photos: bus.photos || [bus.photoUrl],
               createdAt: bus.createdAt,
             });
           }
@@ -281,35 +264,17 @@ export default function App() {
       localStorage.setItem('kbr_fleet_buses', JSON.stringify(updated));
     } catch {}
 
-    // 2. BACKGROUND UPLOAD: Firebase Storage & Database-la save panradhu
+    // 2. FIRESTORE SAVE: Direct-aa Firestore-la save panrom (No Firebase Storage required - 100% Free!)
     try {
-      const uploadedPhotos = await Promise.all(
-        newBus.photos.map(async (photo, index) => {
-          if (photo.startsWith('data:image')) {
-            try {
-              const storageRef = ref(storage, `buses/${id}/photo_${index}.jpg`);
-              await uploadString(storageRef, photo, 'data_url');
-              return await getDownloadURL(storageRef);
-            } catch (storageErr) {
-              console.warn(`Firebase Storage upload skipped for photo ${index} (Storage CORS), using optimized photo data:`, storageErr);
-              return photo; // Keep image as fallback so Firestore save still succeeds!
-            }
-          }
-          return photo;
-        })
-      );
-
-      // 3. FIRESTORE SAVE: Real image URL or fallback data DB-la update pannum
       await setDoc(doc(db, 'buses', id), {
         name: optimisticItem.name,
-        photoUrl: uploadedPhotos[0] || '',
-        photos: uploadedPhotos,
+        photoUrl: optimisticItem.photoUrl,
+        photos: optimisticItem.photos,
         createdAt: optimisticItem.createdAt,
       });
       console.log('✅ Bus saved to Firestore successfully:', id);
-
     } catch (error: any) {
-      console.error('Firebase Error:', error);
+      console.error('Firestore Error:', error);
       if (error?.code === 'permission-denied') {
         alert("Firestore Permission Denied! Firebase Console-la Firestore Rules-la 'allow read, write: if true;' nu set panna vendum.");
       } else {

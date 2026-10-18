@@ -109,12 +109,30 @@ export const AddBusesPage: React.FC<AddBusesPageProps> = ({
     }
   };
 
-  // Add photo via URL
+  // Add photo via URL (Supports direct web URLs, Google Drive, Dropbox, ImgBB, etc.)
   const handleAddUrlPhoto = () => {
-    const trimmed = urlInput.trim();
+    let trimmed = urlInput.trim();
     if (!trimmed) return;
+
+    // Convert Google Drive sharing link into direct viewable image link
+    const driveMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || trimmed.match(/id=([a-zA-Z0-9_-]+)/);
+    if (driveMatch && driveMatch[1]) {
+      trimmed = `https://lh3.googleusercontent.com/d/${driveMatch[1]}`;
+    }
+
+    // Convert Dropbox link to direct link
+    if (trimmed.includes('dropbox.com')) {
+      trimmed = trimmed.replace('?dl=0', '?raw=1');
+    }
+
     setPhotosList((prev) => [...prev, trimmed]);
     setUrlInput('');
+    setError(null);
+  };
+
+  // Add sample bus preset photo
+  const handleAddPresetPhoto = (url: string) => {
+    setPhotosList((prev) => [...prev, url]);
     setError(null);
   };
 
@@ -402,24 +420,59 @@ export const AddBusesPage: React.FC<AddBusesPageProps> = ({
                   </button>
 
                   {/* Add via URL option */}
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <ImageIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="url"
-                        value={urlInput}
-                        onChange={(e) => setUrlInput(e.target.value)}
-                        placeholder="Or paste photo link URL..."
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
+                  <div className="space-y-1.5">
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <ImageIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="url"
+                          value={urlInput}
+                          onChange={(e) => setUrlInput(e.target.value)}
+                          placeholder="Paste image link (Google Drive, ImgBB, Unsplash, web link)..."
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAddUrlPhoto}
+                        className="px-3.5 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        Add URL
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleAddUrlPhoto}
-                      className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
-                    >
-                      Add URL
-                    </button>
+                    <p className="text-[10px] text-slate-500">
+                      💡 Tip: Direct image link or Google Drive share link paste pannalam.
+                    </p>
+                  </div>
+
+                  {/* Quick Sample Bus Presets */}
+                  <div className="pt-2 border-t border-slate-100">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1.5">
+                      Or Pick a Sample Bus Photo:
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleAddPresetPhoto('https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?auto=format&fit=crop&w=1000&q=80')}
+                        className="text-[11px] px-2.5 py-1 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-300 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all cursor-pointer"
+                      >
+                        🚌 Red Sleeper Coach
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAddPresetPhoto('https://images.unsplash.com/photo-1570125909232-eb263c188f7e?auto=format&fit=crop&w=1000&q=80')}
+                        className="text-[11px] px-2.5 py-1 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-300 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all cursor-pointer"
+                      >
+                        🚍 Luxury White Bus
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAddPresetPhoto('https://images.unsplash.com/photo-1557223562-6c77ef16210f?auto=format&fit=crop&w=1000&q=80')}
+                        className="text-[11px] px-2.5 py-1 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-300 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all cursor-pointer"
+                      >
+                        💺 Executive Coach
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
