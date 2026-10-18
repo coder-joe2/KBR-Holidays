@@ -88,7 +88,13 @@ export default function App() {
   const [selectedBusName, setSelectedBusName] = useState<string | null>(null);
   const [viewingCalendarBus, setViewingCalendarBus] = useState<BusItem | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
-  const [currentUser, setCurrentUser] = useState<{ name: string; role: 'admin' | 'user'; email?: string; photoURL?: string } | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ name: string; role: 'admin' | 'user'; email?: string; photoURL?: string } | null>(() => {
+    try {
+      const saved = localStorage.getItem('kbr_current_user');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return null;
+  });
 
   // Bus booking dates from Firestore with local fallback
   const [busBookings, setBusBookings] = useState<Record<string, string[]>>(() => {
@@ -304,6 +310,9 @@ export default function App() {
     } catch (error) {
       console.error('Error signing out:', error);
     }
+    try {
+      localStorage.removeItem('kbr_current_user');
+    } catch {}
     setCurrentUser(null);
   };
 
@@ -313,6 +322,9 @@ export default function App() {
         onBack={() => setActiveTab('home')}
         onLoginSuccess={(user) => {
           setCurrentUser(user);
+          try {
+            localStorage.setItem('kbr_current_user', JSON.stringify(user));
+          } catch {}
           setActiveTab('home');
         }}
       />

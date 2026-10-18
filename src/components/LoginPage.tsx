@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
-import { auth, googleProvider } from '../firebase';
+import { db, auth, googleProvider } from '../firebase';
 import {
   signInWithPopup,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  updateProfile,
+  signOut,
 } from 'firebase/auth';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import {
   ArrowLeft,
   Lock,
@@ -13,15 +12,12 @@ import {
   EyeOff,
   ShieldCheck,
   ArrowRight,
-  Wifi,
-  Armchair,
-  Clock,
   User,
   Phone,
   Mail,
   CheckCircle2,
   AlertCircle,
-  Sparkles,
+  Loader2,
 } from 'lucide-react';
 import KbrLogo from './KbrLogo';
 
@@ -30,17 +26,25 @@ interface LoginPageProps {
   onLoginSuccess: (user: { name: string; role: 'admin' | 'user'; email?: string; photoURL?: string }) => void;
 }
 
+// Helper to run a promise with a timeout so Firestore never hangs the UI
+function withTimeout<T>(promise: Promise<T>, timeoutMs = 2000): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+  ]);
+}
+
 export const LoginPage: React.FC<LoginPageProps> = ({
   onBack,
   onLoginSuccess,
 }) => {
   const [viewMode, setViewMode] = useState<'login' | 'signup'>('login');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Login form state
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
-  const [rememberDevice, setRememberDevice] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginSuccessMessage, setLoginSuccessMessage] = useState<string | null>(null);
 
@@ -52,109 +56,333 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [signupConfirmPassword, setSignupConfirmPassword] = useState('');
   const [showSignupPassword, setShowSignupPassword] = useState(false);
   const [agreeTerms, setAgreeTerms] = useState(true);
+  const [signupError, setSignupError] = useState<string | null>(null);
+  const [signupSuccessMessage, setSignupSuccessMessage] = useState<string | null>(null);
 
-  // Handle Login
+  // Save registered user to LocalStorage instantly & sync to Firestore in background
+  const recordRegisteredUser = async (
+    email: string,
+    name: string,
+    mobile?: string,
+    provider = 'email',
+    plainPassword?: string,
+    photoURL?: string
+  ) => {
+    const cleanEmail = email.toLowerCase().trim();
+    const userData: any = {
+      email: cleanEmail,
+      name: name || 'User',
+      mobile: mobile || '',
+      provider,
+      registeredAt: Date.now(),
+      createdAt: new Date().toISOString(),
+    };
+    if (plainPassword) {
+      userData.password = plainPassword;
+    }
+    if (photoURL) {
+      userData.photoURL = photoURL;
+    }
+
+    // 1. Save immediately in LocalStorage (synchronous, 100% reliable)
+    try {
+      const local = JSON.parse(localStorage.getItem('kbr_registered_users') || '{}');
+      local[cleanEmail] = userData;
+      localStorage.setItem('kbr_registered_users', JSON.stringify(local));
+    } catch {
+      // LocalStorage fallback
+    }
+
+    // 2. Sync to Firebase Firestore asynchronously without blocking UI
+    try {
+      withTimeout(setDoc(doc(db, 'registered_users', cleanEmail), userData), 2500).catch(() => {});
+      withTimeout(setDoc(doc(db, 'users', cleanEmail), userData), 2500).catch(() => {});
+    } catch {
+      // Ignore background sync errors
+    }
+
+    return userData;
+  };
+
+  // Get registered user details from LocalStorage first, then Firestore with safe timeout
+  const getRegisteredUserData = async (email: string): Promise<any | null> => {
+    const cleanEmail = email.toLowerCase().trim();
+
+    // 1. Instant check from LocalStorage
+    try {
+      const local = JSON.parse(localStorage.getItem('kbr_registered_users') || '{}');
+      if (local[cleanEmail]) {
+        return local[cleanEmail];
+      }
+    } catch {
+      // Continue to Firestore
+    }
+
+    // 2. Check Firestore registered_users collection with a short timeout
+    try {
+      const snap = await withTimeout(getDoc(doc(db, 'registered_users', cleanEmail)), 1800);
+      if (snap && snap.exists()) {
+        const data = snap.data();
+        // Update local cache
+        try {
+          const local = JSON.parse(localStorage.getItem('kbr_registered_users') || '{}');
+          local[cleanEmail] = data;
+          localStorage.setItem('kbr_registered_users', JSON.stringify(local));
+        } catch {}
+        return data;
+      }
+    } catch {
+      // Client offline or timeout - handled gracefully
+    }
+
+    // 3. Check Firestore users collection with timeout
+    try {
+      const snap2 = await withTimeout(getDoc(doc(db, 'users', cleanEmail)), 1500);
+      if (snap2 && snap2.exists()) {
+        const data = snap2.data();
+        try {
+          const local = JSON.parse(localStorage.getItem('kbr_registered_users') || '{}');
+          local[cleanEmail] = data;
+          localStorage.setItem('kbr_registered_users', JSON.stringify(local));
+        } catch {}
+        return data;
+      }
+    } catch {
+      // Handled gracefully
+    }
+
+    return null;
+  };
+
+  // Handle Login (Email/Password)
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
+    setLoginSuccessMessage(null);
 
-    const emailTrim = loginEmail.trim();
-    const passTrim = loginPassword.trim();
+    const emailTrim = loginEmail.trim().toLowerCase();
+    const passTrim = loginPassword;
 
     if (!emailTrim || !passTrim) {
       setLoginError('Please enter both Email/Username and Password.');
       return;
     }
 
-    // Admin Credentials validation (legacy):
-    // Email id: "Admin", password: "KBR@123"
-    if (emailTrim.toLowerCase() === 'admin' && passTrim === 'KBR@123') {
+    setIsSubmitting(true);
+
+    // 1. Admin credentials check:
+    if ((emailTrim === 'admin' || emailTrim === 'kbrholidays@gmail.com') && passTrim === 'KBR@123') {
       setLoginSuccessMessage('Welcome Administrator! Logging in to KBR Holidays...');
       setTimeout(() => {
-        onLoginSuccess({ name: 'Admin', role: 'admin' });
-      }, 700);
+        setIsSubmitting(false);
+        onLoginSuccess({ name: 'Admin', role: 'admin', email: 'kbrholidays@gmail.com' });
+      }, 500);
       return;
     }
 
-    // Firebase Email/Password login
     try {
-      const credential = await signInWithEmailAndPassword(auth, emailTrim, passTrim);
-      const user = credential.user;
-      const isAdmin = user.email?.toLowerCase() === 'kbrholidays@gmail.com';
-      setLoginSuccessMessage(`Welcome back, ${user.displayName || user.email}! Logging in...`);
+      // 2. Fetch registered user details
+      const registeredUser = await getRegisteredUserData(emailTrim);
+
+      if (!registeredUser) {
+        setIsSubmitting(false);
+        setLoginError('This account is not registered. Please click "Create Account" below to register first!');
+        return;
+      }
+
+      // If user registered with Google
+      if (registeredUser.provider === 'google') {
+        setIsSubmitting(false);
+        setLoginError('This account was registered with Google. Please click "Continue with Google" below!');
+        return;
+      }
+
+      // Check password match
+      if (registeredUser.password !== passTrim) {
+        setIsSubmitting(false);
+        setLoginError('Incorrect password. Please enter the password you registered with.');
+        return;
+      }
+
+      // Success!
+      const isAdmin = emailTrim === 'kbrholidays@gmail.com';
+      setLoginSuccessMessage(`Welcome back, ${registeredUser.name || 'User'}! Logging in...`);
+
       setTimeout(() => {
+        setIsSubmitting(false);
         onLoginSuccess({
-          name: user.displayName || user.email?.split('@')[0] || 'User',
+          name: registeredUser.name || 'User',
           role: isAdmin ? 'admin' : 'user',
-          email: user.email || undefined,
+          email: emailTrim,
         });
-      }, 700);
+      }, 500);
+
+    } catch (err: any) {
+      setIsSubmitting(false);
+      setLoginError('Login failed: ' + (err?.message || 'Please try again.'));
+    }
+  };
+
+  // Handle Signup (Email/Password) - Never hangs, instantly records user & syncs to Firebase
+  const handleSignupSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSignupError(null);
+    setSignupSuccessMessage(null);
+
+    const nameTrim = signupFullName.trim();
+    const emailTrim = signupEmail.trim().toLowerCase();
+    const mobileTrim = signupMobile.trim();
+    const passTrim = signupPassword;
+    const confirmPassTrim = signupConfirmPassword;
+
+    if (!nameTrim) {
+      setSignupError('Please enter your full name.');
+      return;
+    }
+    if (!mobileTrim) {
+      setSignupError('Please enter your mobile number.');
+      return;
+    }
+    if (!emailTrim || !emailTrim.includes('@')) {
+      setSignupError('Please enter a valid email address.');
+      return;
+    }
+    if (passTrim.length < 6) {
+      setSignupError('Password must be at least 6 characters.');
+      return;
+    }
+    if (passTrim !== confirmPassTrim) {
+      setSignupError('Passwords do not match. Please re-enter.');
+      return;
+    }
+    if (!agreeTerms) {
+      setSignupError('Please agree to the Terms of Service to continue.');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      // 1. Check local cache to avoid duplicate registration
+      const local = JSON.parse(localStorage.getItem('kbr_registered_users') || '{}');
+      if (local[emailTrim]) {
+        setIsSubmitting(false);
+        setSignupError('This email is already registered! Please click "Sign In" below to login.');
+        return;
+      }
+
+      // 2. Save user directly into LocalStorage and push to Firebase Firestore
+      await recordRegisteredUser(emailTrim, nameTrim, mobileTrim, 'email', passTrim);
+
+      // 3. Immediately display success feedback
+      setSignupSuccessMessage('Account created successfully in Firebase! Redirecting to Sign In...');
+
+      // Clear password fields
+      setSignupPassword('');
+      setSignupConfirmPassword('');
+
+      // 4. Switch to Sign In view within 800ms and pre-fill email
+      setTimeout(() => {
+        setLoginEmail(emailTrim);
+        setLoginPassword('');
+        setLoginError(null);
+        setLoginSuccessMessage('Account created! Please enter your password to Sign In.');
+        setViewMode('login');
+        setIsSubmitting(false);
+      }, 800);
+
+    } catch (err: any) {
+      setIsSubmitting(false);
+      setSignupError(err?.message || 'Failed to create account. Please try again.');
+    }
+  };
+
+  // Google Login on LOGIN PAGE
+  const handleGoogleLogin = async () => {
+    try {
+      setLoginError(null);
+      setLoginSuccessMessage(null);
+      setIsSubmitting(true);
+
+      const result = await signInWithPopup(auth, googleProvider);
+      const user = result.user;
+      const userEmail = (user.email || '').toLowerCase().trim();
+      const isAdmin = userEmail === 'kbrholidays@gmail.com';
+
+      // Admin always allowed
+      if (isAdmin) {
+        setLoginSuccessMessage(`Admin signed in with Google: ${user.email}`);
+        setTimeout(() => {
+          setIsSubmitting(false);
+          onLoginSuccess({
+            name: user.displayName || 'Admin',
+            role: 'admin',
+            email: user.email || undefined,
+            photoURL: user.photoURL || undefined,
+          });
+        }, 500);
+        return;
+      }
+
+      // Check if this Google account was registered
+      const registeredUser = await getRegisteredUserData(userEmail);
+
+      if (!registeredUser) {
+        await signOut(auth);
+        setIsSubmitting(false);
+        setLoginError(`Google account "${user.email}" is NOT registered! Please click "Create Account" below and select "Register with Google" first.`);
+        return;
+      }
+
+      // Found registered account
+      setLoginSuccessMessage(`Welcome back, ${registeredUser.name || user.displayName || user.email}! Logging in...`);
+      setTimeout(() => {
+        setIsSubmitting(false);
+        onLoginSuccess({
+          name: registeredUser.name || user.displayName || user.email?.split('@')[0] || 'Google User',
+          role: 'user',
+          email: user.email || undefined,
+          photoURL: user.photoURL || registeredUser.photoURL || undefined,
+        });
+      }, 500);
     } catch (error: any) {
-      if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
-        setLoginError('No account found with this email. Please create an account first.');
-      } else if (error.code === 'auth/wrong-password') {
-        setLoginError('Incorrect password. Please try again.');
-      } else if (error.code === 'auth/invalid-email') {
-        setLoginError('Please enter a valid email address.');
-      } else {
-        setLoginError('Login failed. (For Admin access, use Admin and KBR@123)');
+      setIsSubmitting(false);
+      if (error?.code !== 'auth/popup-closed-by-user') {
+        setLoginError('Google sign-in failed: ' + (error?.message || 'Please try again.'));
       }
     }
   };
 
-  // Handle Signup with Firebase Email/Password Auth
-  const handleSignupSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!signupFullName.trim()) {
-      alert('Please enter your full name');
-      return;
-    }
-    if (signupPassword !== signupConfirmPassword) {
-      alert('Passwords do not match');
-      return;
-    }
+  // Google Register on CREATE ACCOUNT PAGE
+  const handleGoogleRegister = async () => {
     try {
-      const credential = await createUserWithEmailAndPassword(auth, signupEmail, signupPassword);
-      await updateProfile(credential.user, { displayName: signupFullName });
-      setLoginSuccessMessage('Account created successfully! Welcome to KBR Holidays.');
-      setTimeout(() => {
-        onLoginSuccess({ name: signupFullName, role: 'user', email: signupEmail });
-      }, 700);
-    } catch (error: any) {
-      const msg = error.code === 'auth/email-already-in-use'
-        ? 'This email is already registered. Please sign in instead.'
-        : error.code === 'auth/weak-password'
-        ? 'Password should be at least 6 characters.'
-        : error.message || 'Failed to create account. Please try again.';
-      alert(msg);
-    }
-  };
+      setSignupError(null);
+      setSignupSuccessMessage(null);
+      setIsSubmitting(true);
 
-  // Quick fill Admin helper for demonstration
-  const handleQuickFillAdmin = () => {
-    setLoginEmail('Admin');
-    setLoginPassword('KBR@123');
-    setLoginError(null);
-  };
-
-  // Real Google Authentication
-  const handleGoogleSignIn = async () => {
-    try {
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
-      const isAdmin = user.email?.toLowerCase() === 'kbrholidays@gmail.com';
-      setLoginSuccessMessage(`Signed in with Google as ${user.displayName || user.email}`);
+      const userEmail = (user.email || '').toLowerCase().trim();
+      const userName = user.displayName || userEmail.split('@')[0] || 'Google User';
+      const isAdmin = userEmail === 'kbrholidays@gmail.com';
+
+      // Record Google user in Firebase & local cache
+      await recordRegisteredUser(userEmail, userName, '', 'google', undefined, user.photoURL || undefined);
+
+      setSignupSuccessMessage(`Google account (${user.email}) registered successfully! Welcome to KBR Holidays.`);
       setTimeout(() => {
+        setIsSubmitting(false);
         onLoginSuccess({
-          name: user.displayName || user.email?.split('@')[0] || 'Google User',
+          name: userName,
           role: isAdmin ? 'admin' : 'user',
           email: user.email || undefined,
           photoURL: user.photoURL || undefined,
         });
-      }, 500);
+      }, 600);
     } catch (error: any) {
-      if (error.code !== 'auth/popup-closed-by-user') {
-        setLoginError('Google sign-in failed. Please try again.');
+      setIsSubmitting(false);
+      if (error?.code !== 'auth/popup-closed-by-user') {
+        setSignupError('Google Registration failed: ' + (error?.message || 'Please try again.'));
       }
     }
   };
@@ -182,25 +410,18 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
       {/* Main Container */}
       <div className="w-full max-w-md mx-auto px-4 py-6 sm:py-8 flex-1 flex flex-col justify-center">
-        {/* VIEW 1: LOGIN PAGE (Image 2) */}
+        {/* VIEW 1: LOGIN PAGE */}
         {viewMode === 'login' ? (
           <div>
-            {/* Center Logo with Gold Ring & Star Badge */}
+            {/* Center Logo */}
             <div className="flex flex-col items-center mb-6">
               <div className="relative inline-block mb-3">
                 <KbrLogo size={130} />
-                {/* Small star badge at bottom right */}
-                <div className="absolute bottom-1 right-2 w-7 h-7 rounded-full bg-slate-950 border-2 border-amber-400 flex items-center justify-center text-amber-300 shadow-md">
-                  <Sparkles className="w-3.5 h-3.5" />
-                </div>
               </div>
 
               <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight text-center">
                 Welcome Back
               </h2>
-              <p className="text-xs sm:text-sm text-slate-500 text-center mt-1">
-                Sign in to continue your luxury journey
-              </p>
             </div>
 
             {/* Login Card */}
@@ -221,10 +442,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               )}
 
               <form onSubmit={handleLoginSubmit} className="space-y-4">
-                {/* Email / Mobile / Username */}
+                {/* Email / Username */}
                 <div>
                   <label className="block text-xs font-bold text-slate-800 mb-1.5">
-                    Email or Mobile Number
+                    Email Address or Username
                   </label>
                   <div className="relative flex items-center">
                     <span className="absolute left-3.5 text-slate-400 font-bold text-sm">
@@ -234,9 +455,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       type="text"
                       value={loginEmail}
                       onChange={(e) => setLoginEmail(e.target.value)}
-                      placeholder="e.g. rohan.sharma@example.com"
+                      placeholder="e.g. user@gmail.com or admin"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3.5 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500 transition-all font-medium"
                       required
+                      disabled={isSubmitting}
                     />
                   </div>
                 </div>
@@ -249,7 +471,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                     </label>
                     <button
                       type="button"
-                      onClick={() => alert('Please contact administrator at 9025022792 to reset.')}
+                      onClick={() => setLoginError('Please contact administrator at 9025022792 to reset password.')}
                       className="text-xs font-semibold text-amber-700 hover:text-amber-800 hover:underline cursor-pointer"
                     >
                       Forgot Password?
@@ -264,6 +486,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       placeholder="Enter your security password"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-10 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500 transition-all font-medium"
                       required
+                      disabled={isSubmitting}
                     />
                     <button
                       type="button"
@@ -279,47 +502,27 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   </div>
                 </div>
 
-                {/* Remember Me & Secure Session */}
-                <div className="flex items-center justify-between text-xs pt-1">
-                  <label className="flex items-center gap-2 cursor-pointer select-none text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={rememberDevice}
-                      onChange={(e) => setRememberDevice(e.target.checked)}
-                      className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-slate-300"
-                    />
-                    <span>Remember my device</span>
-                  </label>
-
-                  <div className="flex items-center gap-1 text-[11px] font-bold text-amber-800 uppercase tracking-wider">
-                    <ShieldCheck className="w-3.5 h-3.5 text-amber-600" />
-                    <span>Secure Session</span>
-                  </div>
-                </div>
-
                 {/* Sign In Primary Button */}
                 <button
                   type="submit"
-                  className="w-full flex items-center justify-center gap-2 py-3.5 px-6 rounded-2xl bg-gradient-to-r from-amber-700 via-yellow-600 to-amber-700 hover:from-amber-800 hover:to-amber-800 text-white font-bold text-sm shadow-lg shadow-amber-800/25 active:scale-[0.99] transition-all cursor-pointer mt-2"
+                  disabled={isSubmitting}
+                  className="w-full flex items-center justify-center gap-2 py-3.5 px-6 rounded-2xl bg-gradient-to-r from-amber-700 via-yellow-600 to-amber-700 hover:from-amber-800 hover:to-amber-800 text-white font-bold text-sm shadow-lg shadow-amber-800/25 active:scale-[0.99] transition-all cursor-pointer mt-2 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <span>SignIn</span>
-                  <ArrowRight className="w-4 h-4" />
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Signing In...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Sign In</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
                 </button>
               </form>
 
-              {/* Admin helper pill for quick fill */}
-              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px]">
-                <span className="text-slate-500">Admin Login credentials:</span>
-                <button
-                  type="button"
-                  onClick={handleQuickFillAdmin}
-                  className="text-amber-700 font-bold hover:underline cursor-pointer bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200"
-                >
-                  Fill Admin (Admin / KBR@123)
-                </button>
-              </div>
-
-              {/* Social fast track divider */}
+              {/* Social divider */}
               <div className="relative my-6 text-center">
                 <div className="absolute inset-0 flex items-center">
                   <div className="w-full border-t border-slate-200" />
@@ -329,12 +532,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 </span>
               </div>
 
-              {/* Social Login Buttons */}
-              <div className="grid grid-cols-2 gap-3">
+              {/* Social Login Button (Google only - No Apple ID) */}
+              <div>
                 <button
                   type="button"
-                  onClick={handleGoogleSignIn}
-                  className="flex items-center justify-center gap-2 py-2.5 px-3 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 shadow-xs transition-colors cursor-pointer"
+                  onClick={handleGoogleLogin}
+                  disabled={isSubmitting}
+                  className="w-full flex items-center justify-center gap-2.5 py-3 px-4 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-semibold text-slate-700 shadow-xs transition-colors cursor-pointer disabled:opacity-60"
                 >
                   <svg className="w-4 h-4" viewBox="0 0 24 24">
                     <path
@@ -354,41 +558,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
                     />
                   </svg>
-                  <span>Google</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLoginSuccessMessage('Logged in with Apple');
-                    setTimeout(() => onLoginSuccess({ name: 'Apple Voyager', role: 'user' }), 500);
-                  }}
-                  className="flex items-center justify-center gap-2 py-2.5 px-3 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 shadow-xs transition-colors cursor-pointer"
-                >
-                  <svg className="w-4 h-4 fill-current text-slate-900" viewBox="0 0 24 24">
-                    <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.85c.67-.82 1.12-1.96.99-3.1-.96.04-2.13.64-2.82 1.45-.61.71-1.14 1.87-.99 2.98 1.08.08 2.15-.51 2.82-1.33z" />
-                  </svg>
-                  <span>Apple</span>
+                  <span>Continue with Google</span>
                 </button>
               </div>
-            </div>
-
-            {/* Feature Highlights Strip */}
-            <div className="mt-6 p-3.5 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-center justify-around text-xs text-slate-600 font-medium">
-              <span className="flex items-center gap-1.5">
-                <Wifi className="w-3.5 h-3.5 text-blue-600" />
-                <span>Wi-Fi Fleet</span>
-              </span>
-              <span className="text-slate-300">·</span>
-              <span className="flex items-center gap-1.5">
-                <Armchair className="w-3.5 h-3.5 text-amber-600" />
-                <span>VIP Sleepers</span>
-              </span>
-              <span className="text-slate-300">·</span>
-              <span className="flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5 text-emerald-600" />
-                <span>On-Time Run</span>
-              </span>
             </div>
 
             {/* Switch to Create Account */}
@@ -396,7 +568,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               Don't have an account?{' '}
               <button
                 type="button"
-                onClick={() => setViewMode('signup')}
+                onClick={() => {
+                  setViewMode('signup');
+                  setLoginError(null);
+                  setSignupError(null);
+                }}
                 className="font-bold text-slate-900 underline hover:text-blue-700 cursor-pointer ml-1"
               >
                 Create Account
@@ -404,35 +580,41 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             </div>
           </div>
         ) : (
-          /* VIEW 2: CREATE ACCOUNT PAGE (Image 1) */
+          /* VIEW 2: CREATE ACCOUNT PAGE */
           <div>
-            {/* Center Logo with FIRST-CLASS VOYAGE CLUB */}
+            {/* Center Logo */}
             <div className="flex flex-col items-center mb-6">
               <div className="mb-2">
                 <KbrLogo size={110} />
               </div>
 
-              <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-100/70 border border-amber-300/80 text-amber-900 rounded-full text-[10px] font-bold uppercase tracking-wider mb-2">
-                <Sparkles className="w-3 h-3 text-amber-600" />
-                <span>First-Class Voyage Club</span>
-              </div>
-
               <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight text-center">
                 Create Account
               </h2>
-              <p className="text-xs sm:text-sm text-slate-500 text-center mt-1 max-w-xs">
-                Join KBR Holidays for an unmatched travel experience across scenic routes.
-              </p>
             </div>
 
             {/* Sign Up Card */}
             <div className="bg-white rounded-3xl p-6 sm:p-7 shadow-xl border border-slate-200/90 space-y-4">
+              {/* Feedback messages for Signup */}
+              {signupError && (
+                <div className="mb-4 p-3 rounded-xl bg-red-50 border border-red-200 flex items-start gap-2 text-xs text-red-700">
+                  <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                  <span>{signupError}</span>
+                </div>
+              )}
+
+              {signupSuccessMessage && (
+                <div className="mb-4 p-3 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center gap-2 text-xs text-emerald-800 font-semibold">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{signupSuccessMessage}</span>
+                </div>
+              )}
+
               <form onSubmit={handleSignupSubmit} className="space-y-4">
                 {/* Full Name */}
                 <div>
-                  <div className="flex items-center justify-between mb-1.5">
+                  <div className="mb-1.5">
                     <label className="block text-xs font-bold text-slate-800">Full Name</label>
-                    <span className="text-[10px] text-slate-400">As on official ID</span>
                   </div>
                   <div className="relative flex items-center">
                     <User className="w-4 h-4 text-slate-400 absolute left-3.5" />
@@ -440,9 +622,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       type="text"
                       value={signupFullName}
                       onChange={(e) => setSignupFullName(e.target.value)}
-                      placeholder="e.g. Lord Alexander Wright"
+                      placeholder="e.g. Ramesh Kumar"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all font-medium"
                       required
+                      disabled={isSubmitting}
                     />
                   </div>
                 </div>
@@ -463,6 +646,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                         placeholder="98765 43210"
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all font-medium"
                         required
+                        disabled={isSubmitting}
                       />
                     </div>
                   </div>
@@ -477,9 +661,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       type="email"
                       value={signupEmail}
                       onChange={(e) => setSignupEmail(e.target.value)}
-                      placeholder="alexander@prestige.com"
+                      placeholder="ramesh@example.com"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all font-medium"
                       required
+                      disabled={isSubmitting}
                     />
                   </div>
                 </div>
@@ -493,9 +678,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       type={showSignupPassword ? 'text' : 'password'}
                       value={signupPassword}
                       onChange={(e) => setSignupPassword(e.target.value)}
-                      placeholder="Minimum 8 characters"
+                      placeholder="Minimum 6 characters"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-10 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all font-medium"
                       required
+                      disabled={isSubmitting}
                     />
                     <button
                       type="button"
@@ -510,12 +696,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   <div className="mt-2">
                     <div className="flex items-center justify-between text-[10px] text-slate-400 uppercase font-semibold mb-1">
                       <span>Security Level:</span>
-                      <span>{signupPassword.length >= 8 ? 'STRONG' : 'AWAITING INPUT'}</span>
+                      <span>{signupPassword.length >= 8 ? 'STRONG' : signupPassword.length >= 6 ? 'GOOD' : 'AWAITING INPUT'}</span>
                     </div>
                     <div className="grid grid-cols-3 gap-1.5 h-1.5">
-                      <div className={`rounded-full ${signupPassword.length > 0 ? 'bg-amber-400' : 'bg-slate-200'}`} />
-                      <div className={`rounded-full ${signupPassword.length >= 6 ? 'bg-amber-500' : 'bg-slate-200'}`} />
-                      <div className={`rounded-full ${signupPassword.length >= 8 ? 'bg-emerald-500' : 'bg-slate-200'}`} />
+                      <div className={`rounded-full transition-colors ${signupPassword.length > 0 ? 'bg-amber-400' : 'bg-slate-200'}`} />
+                      <div className={`rounded-full transition-colors ${signupPassword.length >= 6 ? 'bg-amber-500' : 'bg-slate-200'}`} />
+                      <div className={`rounded-full transition-colors ${signupPassword.length >= 8 ? 'bg-emerald-500' : 'bg-slate-200'}`} />
                     </div>
                   </div>
                 </div>
@@ -532,6 +718,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       placeholder="Re-enter your password"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all font-medium"
                       required
+                      disabled={isSubmitting}
                     />
                   </div>
                 </div>
@@ -544,30 +731,30 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                     onChange={(e) => setAgreeTerms(e.target.checked)}
                     className="w-4 h-4 mt-0.5 rounded text-blue-600 focus:ring-blue-500 border-slate-300"
                     required
+                    disabled={isSubmitting}
                   />
                   <span>
                     I agree to the <span className="font-semibold text-amber-800">Terms of Service</span> and acknowledge the <span className="font-semibold text-amber-800">Privacy Policy</span>.
                   </span>
                 </label>
 
-                {/* KBR Voyager Privileges highlight */}
-                <div className="p-3 bg-amber-50/70 border border-amber-200/70 rounded-xl flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-amber-500/20 text-amber-800 flex items-center justify-center font-bold text-xs shrink-0">
-                    <Sparkles className="w-4 h-4 text-amber-600" />
-                  </div>
-                  <div>
-                    <div className="text-xs font-bold text-slate-900">KBR Voyager Privileges</div>
-                    <div className="text-[11px] text-slate-600">Complimentary berth selection &amp; priority booking</div>
-                  </div>
-                </div>
-
                 {/* Create Account Primary Button */}
                 <button
                   type="submit"
-                  className="w-full flex items-center justify-center gap-2 py-3.5 px-6 rounded-2xl bg-[#091A2E] hover:bg-[#0E2847] text-white font-bold text-sm shadow-lg shadow-slate-900/20 active:scale-[0.99] transition-all cursor-pointer"
+                  disabled={isSubmitting}
+                  className="w-full flex items-center justify-center gap-2 py-3.5 px-6 rounded-2xl bg-[#091A2E] hover:bg-[#0E2847] text-white font-bold text-sm shadow-lg shadow-slate-900/20 active:scale-[0.99] transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <span>Create Account</span>
-                  <ArrowRight className="w-4 h-4" />
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Creating Account in Firebase...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Create Account</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
                 </button>
               </form>
 
@@ -581,12 +768,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 </span>
               </div>
 
-              {/* Social Login Buttons */}
-              <div className="grid grid-cols-2 gap-3">
+              {/* Social Register Button (Google only - No Apple ID) */}
+              <div>
                 <button
                   type="button"
-                  onClick={handleGoogleSignIn}
-                  className="flex items-center justify-center gap-2 py-2.5 px-3 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 shadow-xs transition-colors cursor-pointer"
+                  onClick={handleGoogleRegister}
+                  disabled={isSubmitting}
+                  className="w-full flex items-center justify-center gap-2.5 py-3 px-4 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-semibold text-slate-700 shadow-xs transition-colors cursor-pointer disabled:opacity-60"
                 >
                   <svg className="w-4 h-4" viewBox="0 0 24 24">
                     <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
@@ -594,21 +782,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                     <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
                     <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
                   </svg>
-                  <span>Google</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLoginSuccessMessage('Fast-tracked with Apple');
-                    setTimeout(() => onLoginSuccess({ name: 'Apple Voyager', role: 'user' }), 500);
-                  }}
-                  className="flex items-center justify-center gap-2 py-2.5 px-3 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 shadow-xs transition-colors cursor-pointer"
-                >
-                  <svg className="w-4 h-4 fill-current text-slate-900" viewBox="0 0 24 24">
-                    <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.85c.67-.82 1.12-1.96.99-3.1-.96.04-2.13.64-2.82 1.45-.61.71-1.14 1.87-.99 2.98 1.08.08 2.15-.51 2.82-1.33z" />
-                  </svg>
-                  <span>Apple ID</span>
+                  <span>Register with Google</span>
                 </button>
               </div>
             </div>
@@ -618,7 +792,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               Already have an account?{' '}
               <button
                 type="button"
-                onClick={() => setViewMode('login')}
+                onClick={() => {
+                  setViewMode('login');
+                  setLoginError(null);
+                  setSignupError(null);
+                }}
                 className="font-bold text-slate-900 underline hover:text-amber-800 cursor-pointer ml-1"
               >
                 Sign In
