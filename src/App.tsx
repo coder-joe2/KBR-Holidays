@@ -39,48 +39,9 @@ const ADMIN_EMAILS = ['kbrholidays@gmail.com'];
 const ADMIN_USERNAME = 'admin';
 const ADMIN_PASSWORD = 'KBR@123';
 
-const DEFAULT_BUSES: BusItem[] = [
-  {
-    id: 'bus-1',
-    name: 'BHAARTHI Super Luxury Sleeper Coach',
-    photoUrl: 'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?auto=format&fit=crop&w=1200&q=80',
-    photos: [
-      'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1570125909232-eb263c188f7e?auto=format&fit=crop&w=1200&q=80',
-    ],
-    createdAt: 1729000000000,
-  },
-  {
-    id: 'bus-2',
-    name: 'VISHAL Executive AC Multi-Axle Sleeper',
-    photoUrl: 'https://images.unsplash.com/photo-1570125909232-eb263c188f7e?auto=format&fit=crop&w=1200&q=80',
-    photos: [
-      'https://images.unsplash.com/photo-1570125909232-eb263c188f7e?auto=format&fit=crop&w=1200&q=80',
-      'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?auto=format&fit=crop&w=1200&q=80',
-    ],
-    createdAt: 1729001000000,
-  },
-];
+const DEFAULT_BUSES: BusItem[] = [];
 
-const DEFAULT_BOOKINGS: Record<string, string[]> = {
-  'bus-1': [
-    '2026-10-14',
-    '2026-10-15',
-    '2026-10-16',
-    '2026-10-20',
-    '2026-10-21',
-    '2026-10-22',
-    '2026-10-25',
-    '2026-11-01',
-    '2026-11-02',
-    '2026-11-03',
-    '2026-11-04',
-    '2027-01-10',
-    '2027-01-11',
-    '2027-01-12',
-  ],
-  'bus-2': ['2026-10-18', '2026-10-28', '2026-11-10', '2027-01-20'],
-};
+const DEFAULT_BOOKINGS: Record<string, string[]> = {};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'travels' | 'add-buses' | 'booking' | 'calendar' | 'login'>('home');
@@ -96,20 +57,29 @@ export default function App() {
     return null;
   });
 
-  // Bus booking dates from Firestore with local fallback
+  // Bus booking dates from Firestore with local fallback (default empty)
   const [busBookings, setBusBookings] = useState<Record<string, string[]>>(() => {
     try {
       const saved = localStorage.getItem('kbr_bus_bookings_v3');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        delete parsed['bus-1'];
+        delete parsed['bus-2'];
+        return parsed;
+      }
     } catch {}
     return DEFAULT_BOOKINGS;
   });
 
-  // Buses list from Firestore with local fallback
+  // Buses list from Firestore with local fallback (default empty)
   const [buses, setBuses] = useState<BusItem[]>(() => {
     try {
       const saved = localStorage.getItem('kbr_fleet_buses');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed: BusItem[] = JSON.parse(saved);
+        const realOnly = parsed.filter((b) => b.id !== 'bus-1' && b.id !== 'bus-2');
+        return realOnly;
+      }
     } catch {}
     return DEFAULT_BUSES;
   });
@@ -131,56 +101,18 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Sync local/cached data to Firestore when an admin logs in and Firestore is empty
+  // One-time cleanup: remove any old default sample bus documents from Firestore
   useEffect(() => {
-    if (currentUser?.role !== 'admin') return;
-
-    const syncLocalDataToFirestore = async () => {
+    const cleanupDefaultBusesFromFirestore = async () => {
       try {
-        // Read current local data (localStorage or defaults)
-        let localBuses: BusItem[] = DEFAULT_BUSES;
-        try {
-          const saved = localStorage.getItem('kbr_fleet_buses');
-          if (saved) localBuses = JSON.parse(saved);
-        } catch {}
-
-        let localBookings: Record<string, string[]> = DEFAULT_BOOKINGS;
-        try {
-          const saved = localStorage.getItem('kbr_bus_bookings_v3');
-          if (saved) localBookings = JSON.parse(saved);
-        } catch {}
-
-        // Check if Firestore buses collection is empty — if yes, push local data
-        const busesSnapshot = await getDocs(collection(db, 'buses'));
-        if (busesSnapshot.empty && localBuses.length > 0) {
-          console.log('🔄 Syncing', localBuses.length, 'buses directly to Firestore...');
-          for (const bus of localBuses) {
-            await setDoc(doc(db, 'buses', bus.id), {
-              name: bus.name,
-              photoUrl: bus.photos?.[0] || bus.photoUrl,
-              photos: bus.photos || [bus.photoUrl],
-              createdAt: bus.createdAt,
-            });
-          }
-          console.log('✅ Buses synced to Firestore!');
-        }
-
-        // Check if Firestore bookings collection is empty
-        const bookingsSnapshot = await getDocs(collection(db, 'bookings'));
-        if (bookingsSnapshot.empty && Object.keys(localBookings).length > 0) {
-          console.log('🔄 Syncing bookings to Firestore...');
-          for (const [busId, dates] of Object.entries(localBookings)) {
-            await setDoc(doc(db, 'bookings', busId), { dates });
-          }
-          console.log('✅ Bookings synced to Firestore!');
-        }
-      } catch (error) {
-        console.error('❌ Failed to sync data to Firestore:', error);
-      }
+        await deleteDoc(doc(db, 'buses', 'bus-1')).catch(() => {});
+        await deleteDoc(doc(db, 'buses', 'bus-2')).catch(() => {});
+        await deleteDoc(doc(db, 'bookings', 'bus-1')).catch(() => {});
+        await deleteDoc(doc(db, 'bookings', 'bus-2')).catch(() => {});
+      } catch {}
     };
-
-    syncLocalDataToFirestore();
-  }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
+    cleanupDefaultBusesFromFirestore();
+  }, []);
 
   // Listen for buses collection from Firestore (real-time)
   useEffect(() => {
@@ -188,16 +120,16 @@ export default function App() {
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        if (!snapshot.empty) {
-          const busesData: BusItem[] = snapshot.docs.map((d) => ({
+        const busesData: BusItem[] = snapshot.docs
+          .map((d) => ({
             id: d.id,
             ...d.data(),
-          })) as BusItem[];
-          setBuses(busesData);
-          try {
-            localStorage.setItem('kbr_fleet_buses', JSON.stringify(busesData));
-          } catch {}
-        }
+          }))
+          .filter((b: any) => b.id !== 'bus-1' && b.id !== 'bus-2') as BusItem[];
+        setBuses(busesData);
+        try {
+          localStorage.setItem('kbr_fleet_buses', JSON.stringify(busesData));
+        } catch {}
         setIsLoading(false);
       },
       (error) => {
@@ -213,16 +145,16 @@ export default function App() {
     const unsubscribe = onSnapshot(
       collection(db, 'bookings'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const bookingsData: Record<string, string[]> = {};
-          snapshot.docs.forEach((d) => {
+        const bookingsData: Record<string, string[]> = {};
+        snapshot.docs.forEach((d) => {
+          if (d.id !== 'bus-1' && d.id !== 'bus-2') {
             bookingsData[d.id] = d.data().dates || [];
-          });
-          setBusBookings(bookingsData);
-          try {
-            localStorage.setItem('kbr_bus_bookings_v3', JSON.stringify(bookingsData));
-          } catch {}
-        }
+          }
+        });
+        setBusBookings(bookingsData);
+        try {
+          localStorage.setItem('kbr_bus_bookings_v3', JSON.stringify(bookingsData));
+        } catch {}
       },
       (error) => {
         console.warn('Firestore bookings error, using cached data:', error);
